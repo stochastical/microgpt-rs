@@ -30,8 +30,6 @@ struct Value {
 }
 
 impl Value {
-    /// I can't impl ValueRef directly, but should this return Rc<Value> directly?
-    /// Or a reference &Rc<ValueRef> instead?
     fn new(data: f64) -> ValueRef {
         Rc::new(RefCell::new(Value {
             data,
@@ -40,115 +38,128 @@ impl Value {
             local_grads: Vec::new(),
         }))
     }
+}
 
-    /// I don't love that I can't directly make these &self methods
-    /// I can wrap ValueRef in a new struct, but might not be clean either
-    /// There's also some redundancy in these methods that can be factored out
-    /// Ideally add and sub should be an impl for operator overload, to make syntax more concise
-    fn add(self_: &ValueRef, other: &ValueRef) -> ValueRef {
-        Rc::new(RefCell::new(Value {
-            data: self_.borrow().data + other.borrow().data,
-            grad: 0.0,
-            children: vec![self_.clone(), other.clone()],
-            local_grads: vec![1.0, 1.0],
-        }))
-    }
-
-    fn mul(self_: &ValueRef, other: &ValueRef) -> ValueRef {
-        Rc::new(RefCell::new(Value {
-            data: self_.borrow().data * other.borrow().data,
-            grad: 0.0,
-            children: vec![self_.clone(), other.clone()],
-            local_grads: vec![other.borrow().data, self_.borrow().data],
-        }))
-    }
-
-    fn pow(self_: &ValueRef, other: f64) -> ValueRef {
-        Rc::new(RefCell::new(Value {
-            data: self_.borrow().data.powf(other),
-            grad: 0.0,
-            children: vec![self_.clone()],
-            local_grads: vec![other * self_.borrow().data.powf(other - 1.0)],
-        }))
-    }
-
-    fn log(self_: &ValueRef) -> ValueRef {
-        Rc::new(RefCell::new(Value {
-            data: self_.borrow().data.ln(),
-            grad: 0.0,
-            children: vec![self_.clone()],
-            local_grads: vec![1.0 / self_.borrow().data],
-        }))
-    }
-
-    fn exp(self_: &ValueRef) -> ValueRef {
-        Rc::new(RefCell::new(Value {
-            data: self_.borrow().data.exp(),
-            grad: 0.0,
-            children: vec![self_.clone()],
-            local_grads: vec![self_.borrow().data.exp()],
-        }))
-    }
-
-    fn relu(self_: &ValueRef) -> ValueRef {
-        Rc::new(RefCell::new(Value {
-            data: f64::max(0.0, self_.borrow().data),
-            grad: 0.0,
-            children: vec![self_.clone()],
-            local_grads: vec![f64::from(self_.borrow().data > 0.0)], // TODO: cleaner expression?
-        }))
-    }
-
-    fn neg(self_: &ValueRef) -> ValueRef {
-        Self::mul(self_, &Value::new(-1.0))
-    }
-
+trait ValueOps {
+    fn add(&self, other: &Self) -> Self;
+    fn mul(&self, other: &Self) -> Self;
+    fn pow(&self, other: f64) -> Self;
+    fn sub(&self, other: &Self) -> Self;
+    fn truediv(&self, other: &Self) -> Self;
+    fn neg(&self) -> Self;
+    fn log(&self) -> Self;
+    fn exp(&self) -> Self;
+    fn relu(&self) -> Self;
+    fn backward(&self);
     // NOTE: python implementation defines the right-associative arithmetic operations, but we elide them
     // fn __radd__
     // fn __rsub__
     // fn __rmul__
     // fn __rtruediv__
+}
 
-    fn sub(self_: &ValueRef, other: &ValueRef) -> ValueRef {
-        Self::add(self_, &Self::mul(&Value::new(-1.0), other))
+impl ValueOps for ValueRef {
+    /// Ideally add and sub should be an impl for operator overload, to make syntax more concise
+    /// but will only work with a newtype pattern
+
+    fn add(&self, other: &Self) -> Self {
+        Rc::new(RefCell::new(Value {
+            data: self.borrow().data + other.borrow().data,
+            grad: 0.0,
+            children: vec![self.clone(), other.clone()],
+            local_grads: vec![1.0, 1.0],
+        }))
     }
 
-    fn truediv(self_: &ValueRef, other: &ValueRef) -> ValueRef {
-        Self::mul(self_, &Self::pow(other, -1.0))
+    fn mul(&self, other: &Self) -> Self {
+        Rc::new(RefCell::new(Value {
+            data: self.borrow().data * other.borrow().data,
+            grad: 0.0,
+            children: vec![self.clone(), other.clone()],
+            local_grads: vec![other.borrow().data, self.borrow().data],
+        }))
     }
 
-    /// This is a /bit/ gnarly: we can't derive Hash on the Value struct, since the f64
-    /// doesn't compare Eq, because of NaNs (not-reflective)
-    /// Thus, we can't store the Value nodes in a HashSet directly
-    /// But, we can store pointer to a RefCell<Value>; effectively, we're using the pointer address
-    /// as a unique object ID, as opposed to a Hash, or, using an actual globally unique ID
-    /// Still feels a bit messy though, but idk, maybe is idiomatic
-    fn backward(self_: &ValueRef) {
+    fn pow(&self, other: f64) -> Self {
+        Rc::new(RefCell::new(Value {
+            data: self.borrow().data.powf(other),
+            grad: 0.0,
+            children: vec![self.clone()],
+            local_grads: vec![other * self.borrow().data.powf(other - 1.0)],
+        }))
+    }
+
+    fn neg(&self) -> Self {
+        self.mul(&Value::new(-1.0))
+    }
+
+    fn sub(&self, other: &Self) -> Self {
+        self.add(&Value::new(-1.0).mul(other))
+    }
+
+    fn truediv(&self, other: &Self) -> Self {
+        self.mul(&other.pow(-1.0))
+    }
+
+    fn relu(&self) -> Self {
+        Rc::new(RefCell::new(Value {
+            data: f64::max(0.0, self.borrow().data),
+            grad: 0.0,
+            children: vec![self.clone()],
+            local_grads: vec![f64::from(self.borrow().data > 0.0)], // TODO: cleaner expression?
+        }))
+    }
+
+    fn log(&self) -> Self {
+        Rc::new(RefCell::new(Value {
+            data: self.borrow().data.ln(),
+            grad: 0.0,
+            children: vec![self.clone()],
+            local_grads: vec![1.0 / self.borrow().data],
+        }))
+    }
+
+    fn exp(&self) -> Self {
+        Rc::new(RefCell::new(Value {
+            data: self.borrow().data.exp(),
+            grad: 0.0,
+            children: vec![self.clone()],
+            local_grads: vec![self.borrow().data.exp()],
+        }))
+    }
+
+    // This is a /bit/ gnarly: we can't derive Hash on the Value struct, since the f64
+    // doesn't compare Eq, because of NaNs (not-reflective)
+    // Thus, we can't store the Value nodes in a HashSet directly
+    // But, we can store pointer to a RefCell<Value>; effectively, we're using the pointer address
+    // as a unique object ID, as opposed to a Hash, or, using an actual globally unique ID
+    // Still feels a bit messy though, but idk, maybe is idiomatic
+    fn backward(&self) {
+        fn build_topo(
+            v: &ValueRef,
+            visited: &mut HashSet<*const RefCell<Value>>,
+            topo: &mut Vec<ValueRef>,
+        ) {
+            let addr = Rc::as_ptr(v);
+            if !visited.contains(&addr) {
+                visited.insert(addr);
+                for child in &v.borrow().children {
+                    build_topo(child, visited, topo);
+                }
+                topo.push(v.clone());
+            }
+        }
+
         let mut topo: Vec<ValueRef> = Vec::new();
         let mut visited: HashSet<*const RefCell<Value>> = HashSet::new();
-        Self::build_topo(self_, &mut visited, &mut topo);
+        build_topo(self, &mut visited, &mut topo);
 
-        self_.borrow_mut().grad = 1.0;
+        self.borrow_mut().grad = 1.0;
 
         for v in topo.iter().rev() {
             for (child, local_grad) in v.borrow().children.iter().zip(&v.borrow().local_grads) {
                 child.borrow_mut().grad += local_grad * v.borrow().grad;
             }
-        }
-    }
-
-    fn build_topo(
-        v: &ValueRef,
-        visited: &mut HashSet<*const RefCell<Value>>,
-        topo: &mut Vec<Rc<RefCell<Value>>>,
-    ) {
-        let addr = Rc::as_ptr(v);
-        if !visited.contains(&addr) {
-            visited.insert(addr);
-            for child in &v.borrow().children {
-                Self::build_topo(child, visited, topo);
-            }
-            topo.push(v.clone());
         }
     }
 }
@@ -175,10 +186,8 @@ fn matrix(nout: usize, nin: usize) -> Matrix {
 //         todo!()
 //     }
 // }
-
 fn sum(x: &Vec<ValueRef>) -> ValueRef {
-    x.iter()
-        .fold(Value::new(0.0), |acc, x| Value::add(&acc, &x))
+    x.iter().fold(Value::new(0.0), |acc, x| acc.add(x))
 }
 
 // Would need refactoring, but there's an awful lot of collects throughout
@@ -190,7 +199,7 @@ fn linear(x: &Vec<ValueRef>, w: &Matrix) -> Vec<ValueRef> {
             sum(&wo
                 .iter()
                 .zip(x) // do I need x.iter?
-                .map(|(wi, xi)| Value::mul(wi, xi))
+                .map(|(wi, xi)| wi.mul(xi))
                 .collect())
         })
         .collect()
@@ -205,22 +214,16 @@ fn softmax(logits: &Vec<ValueRef>) -> Vec<ValueRef> {
         .max_by(|x, y| x.total_cmp(y))
         .unwrap();
     let max_val: ValueRef = Value::new(max_val); // really need a nicer way than explictly casting
-    let exps: Vec<ValueRef> = logits
-        .iter()
-        .map(|val| Value::exp(&Value::sub(val, &max_val)))
-        .collect();
+    let exps: Vec<ValueRef> = logits.iter().map(|val| val.sub(&max_val).exp()).collect();
     let total: ValueRef = sum(&exps);
 
-    exps.iter().map(|e| Value::truediv(&e, &total)).collect()
+    exps.iter().map(|e| e.truediv(&total)).collect()
 }
 
 fn rmsnorm(x: &Vec<ValueRef>) -> Vec<ValueRef> {
-    let ms = Value::truediv(
-        &sum(&x.iter().map(|xi| Value::mul(xi, xi)).collect()),
-        &Value::new(x.len() as f64),
-    );
-    let scale = Value::pow(&Value::add(&ms, &Value::new(1e-5)), -0.5); // more magic values...
-    x.iter().map(|xi| Value::mul(xi, &scale)).collect()
+    let ms = sum(&x.iter().map(|xi| xi.mul(xi)).collect()).truediv(&Value::new(x.len() as f64));
+    let scale = ms.add(&Value::new(1e-5)).pow(-0.5); // more magic values...
+    x.iter().map(|xi| xi.mul(&scale)).collect()
 }
 
 fn gpt(
@@ -235,11 +238,7 @@ fn gpt(
 ) -> Vec<ValueRef> {
     let tok_emb: &Vec<ValueRef> = &state_dict.get("wte").unwrap()[token_id]; // into vs to_string vs to_owned vs ...
     let pos_emb: &Vec<ValueRef> = &state_dict.get("wpe").unwrap()[pos_id];
-    let mut x: Vec<ValueRef> = tok_emb
-        .iter()
-        .zip(pos_emb)
-        .map(|(t, p)| Value::add(t, p))
-        .collect();
+    let mut x: Vec<ValueRef> = tok_emb.iter().zip(pos_emb).map(|(t, p)| t.add(p)).collect();
     x = rmsnorm(&x);
 
     for li in 0..n_layer {
@@ -262,18 +261,17 @@ fn gpt(
                 values[li].iter().map(|vi| &vi[hs..hs + head_dim]).collect();
             let attn_logits: Vec<ValueRef> = (0..k_h.len())
                 .map(|t| {
-                    let dot_product: ValueRef = sum(&(0..head_dim)
-                        .map(|j| Value::mul(&q_h[j], &k_h[t][j]))
-                        .collect());
+                    let dot_product: ValueRef =
+                        sum(&(0..head_dim).map(|j| q_h[j].mul(&k_h[t][j])).collect());
 
-                    Value::truediv(&dot_product, &Value::new((head_dim as f64).sqrt()))
+                    dot_product.truediv(&Value::new((head_dim as f64).sqrt()))
                 })
                 .collect();
             let attn_weights = softmax(&attn_logits);
             let head_out: Vec<ValueRef> = (0..head_dim)
                 .map(|j| {
                     sum(&(0..v_h.len())
-                        .map(|t| Value::mul(&attn_weights[t], &v_h[t][j]))
+                        .map(|t| attn_weights[t].mul(&v_h[t][j]))
                         .collect())
                 })
                 .collect();
@@ -286,19 +284,19 @@ fn gpt(
         x = x
             .iter()
             .zip(x_residual)
-            .map(|(a, b)| Value::add(&a, &b)) // can I omit &a, &b and pass anonymously as a function?
+            .map(|(a, b)| a.add(&b)) // can I omit &a, &b and pass anonymously as a function?
             .collect(); // is there no equivalent to Haskell's zipwith?
 
         // small observation: removing the residual
         let x_residual = x.clone(); //clone??
         x = rmsnorm(&x);
         x = linear(&x, &state_dict.get(&format!("layer{li}.mlp_fc1")).unwrap());
-        x = x.iter().map(Value::relu).collect();
+        x = x.iter().map(ValueRef::relu).collect();
         x = linear(&x, &state_dict.get(&format!("layer{li}.mlp_fc2")).unwrap());
         x = x
             .iter()
             .zip(x_residual)
-            .map(|(a, b)| Value::add(&a, &b)) // can I omot &a, &b and pass anonymously?
+            .map(|(a, b)| a.add(&b)) // can I omot &a, &b and pass anonymously?
             .collect(); // is there no equivalent to Haskell's zipwith?
     }
     // is there a way to name and return in one expression? Why can't let return the value instead of unit ()
@@ -337,7 +335,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // I initially went weith a HashSet, converted to vec, and then sorted
     // but BTreeSet sorts on insert, which is nice
     // the issue is we need to do a full scan later to do the bidirectional tokenisation, to find the index of the character using position. But c'est la vie (it's tiny anyways)
-    let uchars: BTreeSet<char> = BTreeSet::from_iter(docs.join(&"").chars()); // or docs.flatten()?
+    let uchars: BTreeSet<char> = BTreeSet::from_iter(docs.join("").chars()); // or docs.flatten()?
     let uchars: Vec<&char> = uchars.iter().collect();
     let BOS = uchars.len(); // token id for a special Beginning of Sequence (BOS) token
     let vocab_size = uchars.len() + 1; // total number of unique tokens, +1 is for BOS
@@ -406,13 +404,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &state_dict,
             );
             let probs = softmax(&logits);
-            let loss_t: ValueRef = Value::neg(&Value::log(&probs[target_id]));
+            let loss_t: ValueRef = probs[target_id].log().neg();
             losses.push(loss_t);
         }
-        let loss: ValueRef = Value::mul(&Value::new(1.0 / n as f64), &sum(&losses)); // final average loss over the document sequence. May yours be low.
+        let loss: ValueRef = Value::new(1.0 / n as f64).mul(&sum(&losses)); // final average loss over the document sequence. May yours be low.
 
         // Backward the loss, calculating the gradients with respect to all model parameters
-        Value::backward(&loss);
+        loss.backward();
 
         // Adam optimizer update: update the model parameters based on the corresponding gradients
         let lr_t = learning_rate * (1.0 - (step as f64) / (num_steps as f64)); // linear learning rate decay
@@ -453,7 +451,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let probs: Vec<ValueRef> = softmax(
                 &logits
                     .iter()
-                    .map(|l| Value::truediv(l, &Value::new(temperature)))
+                    .map(|l| l.truediv(&Value::new(temperature)))
                     .collect(),
             );
             token_id = *(0..vocab_size)
