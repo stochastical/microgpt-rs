@@ -1,5 +1,4 @@
-use rand::prelude::*;
-use rand::seq::SliceRandom;
+use rand::seq::{IndexedRandom, SliceRandom};
 use rand_distr::{Distribution, Normal};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -14,6 +13,7 @@ use std::{collections::HashSet, ops::Add, ops::Mul, vec};
 // NOTE: I define other type aliases below too; should they all be grouped at the top?
 // Reference is https://github.com/nrc/r4cppp/blob/master/graphs/README.md for the trick of using an Rc<RefCell<Value>>
 type ValueRef = Rc<RefCell<Value>>;
+type Matrix = Vec<Vec<ValueRef>>; // I'd prefer to use a flat Vec with row-major ordering, but as Karpathy does, so be it
 
 /// TODO: Consider dtypes: can use f16/f32 (or make generic)
 /// Needs some thinking, but should be able to couple the children and local_grads together
@@ -154,7 +154,6 @@ impl Value {
 }
 
 // Could also define a type Embedding = Vec<ValueRef>; (but not every Vec<ValueRef> is an embedding)
-type Matrix = Vec<Vec<ValueRef>>; // I'd prefer to use a flat Vec with row-major ordering, but as Karpathy does, so be it
 fn matrix(nout: usize, nin: usize) -> Matrix {
     let mut rng = rand::rng(); // Not really important, but how does one set seeds in Rust?
     let normal = Normal::new(0.0, 0.08).unwrap(); // ugh, magic numbers
@@ -171,11 +170,12 @@ fn matrix(nout: usize, nin: usize) -> Matrix {
 }
 
 // Would be nicer to impl Sum directly, I feel
-// impl Sum for Vec<ValueRef> {
+// impl Sum for Vec<dyn Rc<RefCell<Value>>> {
 //     fn sum<I: Iterator<Item = Self>>(std::iter: I) -> Self {
 //         todo!()
 //     }
 // }
+
 fn sum(x: &Vec<ValueRef>) -> ValueRef {
     x.iter()
         .fold(Value::new(0.0), |acc, x| Value::add(&acc, &x))
@@ -202,7 +202,7 @@ fn softmax(logits: &Vec<ValueRef>) -> Vec<ValueRef> {
     let max_val: f64 = logits
         .iter()
         .map(|v| v.borrow().data)
-        .max_by(|x, y| x.partial_cmp(y).unwrap())
+        .max_by(|x, y| x.total_cmp(y))
         .unwrap();
     let max_val: ValueRef = Value::new(max_val); // really need a nicer way than explictly casting
     let exps: Vec<ValueRef> = logits
@@ -233,8 +233,8 @@ fn gpt(
     values: &mut Vec<Matrix>,
     state_dict: &HashMap<String, Matrix>,
 ) -> Vec<ValueRef> {
-    let tok_emb: &Vec<ValueRef> = &state_dict.get(&"wte".to_string()).unwrap()[token_id]; // into vs to_string vs to_owned vs ...
-    let pos_emb: &Vec<ValueRef> = &state_dict.get(&"wpe".to_string()).unwrap()[pos_id];
+    let tok_emb: &Vec<ValueRef> = &state_dict.get("wte").unwrap()[token_id]; // into vs to_string vs to_owned vs ...
+    let pos_emb: &Vec<ValueRef> = &state_dict.get("wpe").unwrap()[pos_id];
     let mut x: Vec<ValueRef> = tok_emb
         .iter()
         .zip(pos_emb)
@@ -302,8 +302,7 @@ fn gpt(
             .collect(); // is there no equivalent to Haskell's zipwith?
     }
     // is there a way to name and return in one expression? Why can't let return the value instead of unit ()
-    let logits: Vec<Rc<RefCell<Value>>> =
-        linear(&x, &state_dict.get(&"lm_head".to_string()).unwrap());
+    let logits: Vec<Rc<RefCell<Value>>> = linear(&x, &state_dict.get("lm_head").unwrap());
     logits
 }
 
@@ -426,11 +425,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             p.borrow_mut().grad = 0.0;
         }
         print!(
-            "step {} / {} | loss {}\r",
+            "step {:4} / {:4} | loss {:.4}\r",
             step + 1,
             num_steps,
             loss.borrow().data
-        ); // TODO: add format specifiers
+        );
     }
 
     // Inference: may the model babble back to us
@@ -466,7 +465,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             sample.push(uchars[token_id]);
         }
-        println!("sample {}: {}", sample_idx + 1, String::from_iter(sample));
+        println!("sample {:2}: {}", sample_idx + 1, String::from_iter(sample));
     }
     Ok(())
 }
