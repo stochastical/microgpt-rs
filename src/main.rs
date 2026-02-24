@@ -236,8 +236,8 @@ fn gpt(
     values: &mut Vec<Matrix>,
     state_dict: &HashMap<String, Matrix>,
 ) -> Vec<ValueRef> {
-    let tok_emb: &Vec<ValueRef> = &state_dict.get("wte").unwrap()[token_id]; // into vs to_string vs to_owned vs ...
-    let pos_emb: &Vec<ValueRef> = &state_dict.get("wpe").unwrap()[pos_id];
+    let tok_emb: &Vec<ValueRef> = &state_dict["wte"][token_id]; // into vs to_string vs to_owned vs ...
+    let pos_emb: &Vec<ValueRef> = &state_dict["wpe"][pos_id];
     let mut x: Vec<ValueRef> = tok_emb.iter().zip(pos_emb).map(|(t, p)| t.add(p)).collect();
     x = rmsnorm(&x);
 
@@ -246,9 +246,9 @@ fn gpt(
         let x_residual = x.clone(); // Do I need to copy/clone? (I think the python is implictly doing that...)
         x = rmsnorm(&x);
         //NOTE for article; I got quite stuck here ^^
-        let q: Vec<ValueRef> = linear(&x, state_dict.get(&format!("layer{li}.attn_wq")).unwrap());
-        let k: Vec<ValueRef> = linear(&x, state_dict.get(&format!("layer{li}.attn_wk")).unwrap());
-        let v: Vec<ValueRef> = linear(&x, state_dict.get(&format!("layer{li}.attn_wv")).unwrap());
+        let q: Vec<ValueRef> = linear(&x, &state_dict[&format!("layer{li}.attn_wq")]);
+        let k: Vec<ValueRef> = linear(&x, &state_dict[&format!("layer{li}.attn_wk")]);
+        let v: Vec<ValueRef> = linear(&x, &state_dict[&format!("layer{li}.attn_wv")]);
         keys[li].push(k);
         values[li].push(v);
 
@@ -277,10 +277,7 @@ fn gpt(
                 .collect();
             x_attn.extend(head_out);
         }
-        x = linear(
-            &x_attn,
-            &state_dict.get(&format!("layer{li}.attn_wo")).unwrap(),
-        );
+        x = linear(&x_attn, &state_dict[&format!("layer{li}.attn_wo")]);
         x = x
             .iter()
             .zip(x_residual)
@@ -290,9 +287,9 @@ fn gpt(
         // small observation: removing the residual
         let x_residual = x.clone(); //clone??
         x = rmsnorm(&x);
-        x = linear(&x, &state_dict.get(&format!("layer{li}.mlp_fc1")).unwrap());
+        x = linear(&x, &state_dict[&format!("layer{li}.mlp_fc1")]);
         x = x.iter().map(ValueRef::relu).collect();
-        x = linear(&x, &state_dict.get(&format!("layer{li}.mlp_fc2")).unwrap());
+        x = linear(&x, &state_dict[&format!("layer{li}.mlp_fc2")]);
         x = x
             .iter()
             .zip(x_residual)
@@ -300,7 +297,7 @@ fn gpt(
             .collect(); // is there no equivalent to Haskell's zipwith?
     }
     // is there a way to name and return in one expression? Why can't let return the value instead of unit ()
-    let logits: Vec<Rc<RefCell<Value>>> = linear(&x, &state_dict.get("lm_head").unwrap());
+    let logits: Vec<Rc<RefCell<Value>>> = linear(&x, &state_dict["lm_head"]);
     logits
 }
 
