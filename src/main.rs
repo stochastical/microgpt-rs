@@ -1,16 +1,14 @@
 use rand::seq::{IndexedRandom, SliceRandom};
 use rand_distr::{Distribution, Normal};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::fs::File;
 use std::io::Read;
-use std::iter::Sum;
 use std::path::Path;
 use std::rc::Rc;
-use std::{collections::HashSet, ops::Add, ops::Mul, vec};
 
-// NOTE: I define other type aliases below too; should they all be grouped at the top?
 // Reference is https://github.com/nrc/r4cppp/blob/master/graphs/README.md for the trick of using an Rc<RefCell<Value>>
 type ValueRef = Rc<RefCell<Value>>;
 type Matrix = Vec<Vec<ValueRef>>; // I'd prefer to use a flat Vec with row-major ordering, but as Karpathy does, so be it
@@ -186,8 +184,8 @@ fn matrix(nout: usize, nin: usize) -> Matrix {
 //         todo!()
 //     }
 // }
-fn sum(x: &Vec<ValueRef>) -> ValueRef {
-    x.iter().fold(Value::new(0.0), |acc, x| acc.add(x))
+fn sum(x: impl IntoIterator<Item = ValueRef>) -> ValueRef {
+    x.into_iter().fold(Value::new(0.0), |acc, x| acc.add(&x))
 }
 
 // Would need refactoring, but there's an awful lot of collects throughout
@@ -195,34 +193,27 @@ fn sum(x: &Vec<ValueRef>) -> ValueRef {
 // Would that needlessly complicate the type signatures to something dynamic'y though?
 fn linear(x: &Vec<ValueRef>, w: &Matrix) -> Vec<ValueRef> {
     w.iter()
-        .map(|wo| {
-            sum(&wo
-                .iter()
-                .zip(x) // do I need x.iter?
-                .map(|(wi, xi)| wi.mul(xi))
-                .collect())
-        })
+        .map(|wo| sum(wo.iter().zip(x).map(|(wi, xi)| wi.mul(xi))))
         .collect()
 }
 
 fn softmax(logits: &Vec<ValueRef>) -> Vec<ValueRef> {
-    // assert!(logits.iter().all(|v| v.borrow().data.is_finite()));
     // We do some hackery to compute the max of a Vec<f64>
-    let max_val: f64 = logits
-        .iter()
-        .map(|v| v.borrow().data)
-        .max_by(|x, y| x.total_cmp(y))
-        .unwrap();
-    let max_val: ValueRef = Value::new(max_val); // really need a nicer way than explictly casting
-    let exps: Vec<ValueRef> = logits.iter().map(|val| val.sub(&max_val).exp()).collect();
-    let total: ValueRef = sum(&exps);
-
-    exps.iter().map(|e| e.truediv(&total)).collect()
+    let max_val: ValueRef = Value::new(
+        logits
+            .iter()
+            .map(|v| v.borrow().data)
+            .max_by(|x, y| x.total_cmp(y))
+            .unwrap(),
+    );
+    let exps = logits.iter().map(|val| val.sub(&max_val).exp());
+    let total: ValueRef = sum(exps.clone().map(|v| v));
+    exps.map(|e| e.truediv(&total)).collect()
 }
 
 fn rmsnorm(x: &Vec<ValueRef>) -> Vec<ValueRef> {
-    let ms = sum(&x.iter().map(|xi| xi.mul(xi)).collect()).truediv(&Value::new(x.len() as f64));
-    let scale = ms.add(&Value::new(1e-5)).pow(-0.5); // more magic values...
+    let ms = sum(x.iter().map(|xi| xi.mul(xi))).truediv(&Value::new(x.len() as f64));
+    let scale = ms.add(&Value::new(1e-5)).pow(-0.5); // more magic values
     x.iter().map(|xi| xi.mul(&scale)).collect()
 }
 
@@ -236,7 +227,7 @@ fn gpt(
     values: &mut Vec<Matrix>,
     state_dict: &HashMap<String, Matrix>,
 ) -> Vec<ValueRef> {
-    let tok_emb: &Vec<ValueRef> = &state_dict["wte"][token_id]; // into vs to_string vs to_owned vs ...
+    let tok_emb: &Vec<ValueRef> = &state_dict["wte"][token_id];
     let pos_emb: &Vec<ValueRef> = &state_dict["wpe"][pos_id];
     let mut x: Vec<ValueRef> = tok_emb.iter().zip(pos_emb).map(|(t, p)| t.add(p)).collect();
     x = rmsnorm(&x);
@@ -245,7 +236,6 @@ fn gpt(
         // 1) Multi-head Attention block
         let x_residual = x.clone(); // Do I need to copy/clone? (I think the python is implictly doing that...)
         x = rmsnorm(&x);
-        //NOTE for article; I got quite stuck here ^^
         let q: Vec<ValueRef> = linear(&x, &state_dict[&format!("layer{li}.attn_wq")]);
         let k: Vec<ValueRef> = linear(&x, &state_dict[&format!("layer{li}.attn_wk")]);
         let v: Vec<ValueRef> = linear(&x, &state_dict[&format!("layer{li}.attn_wv")]);
@@ -261,19 +251,13 @@ fn gpt(
                 values[li].iter().map(|vi| &vi[hs..hs + head_dim]).collect();
             let attn_logits: Vec<ValueRef> = (0..k_h.len())
                 .map(|t| {
-                    let dot_product: ValueRef =
-                        sum(&(0..head_dim).map(|j| q_h[j].mul(&k_h[t][j])).collect());
-
+                    let dot_product: ValueRef = sum((0..head_dim).map(|j| q_h[j].mul(&k_h[t][j])));
                     dot_product.truediv(&Value::new((head_dim as f64).sqrt()))
                 })
                 .collect();
             let attn_weights = softmax(&attn_logits);
             let head_out: Vec<ValueRef> = (0..head_dim)
-                .map(|j| {
-                    sum(&(0..v_h.len())
-                        .map(|t| attn_weights[t].mul(&v_h[t][j]))
-                        .collect())
-                })
+                .map(|j| sum((0..v_h.len()).map(|t| attn_weights[t].mul(&v_h[t][j]))))
                 .collect();
             x_attn.extend(head_out);
         }
@@ -290,11 +274,7 @@ fn gpt(
         x = linear(&x, &state_dict[&format!("layer{li}.mlp_fc1")]);
         x = x.iter().map(ValueRef::relu).collect();
         x = linear(&x, &state_dict[&format!("layer{li}.mlp_fc2")]);
-        x = x
-            .iter()
-            .zip(x_residual)
-            .map(|(a, b)| a.add(&b)) // can I omot &a, &b and pass anonymously?
-            .collect(); // is there no equivalent to Haskell's zipwith?
+        x = x.iter().zip(x_residual).map(|(a, b)| a.add(&b)).collect(); // is there no equivalent to Haskell's zipwith? Also, tuple unpacking
     }
     // is there a way to name and return in one expression? Why can't let return the value instead of unit ()
     let logits: Vec<Rc<RefCell<Value>>> = linear(&x, &state_dict["lm_head"]);
@@ -320,8 +300,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut docs: Vec<&str> = names
         .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
         .collect(); // I don't think I really need to trim the source data, but eh
     docs.shuffle(&mut rng);
     println!("num docs: {}", docs.len());
@@ -385,8 +365,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Forward the token sequence through the model, building up the computation graph all the way to the loss
         // for efficiency, I think I can calculate and pre-allocate the max-capacity to avoid unnecessary allocs
-        let mut keys: Vec<Matrix> = vec![Vec::new(); n_layer]; // cleaner way?
-        let mut values: Vec<Matrix> = vec![Vec::new(); n_layer]; // cleaner way?
+        let (mut keys, mut values): (Vec<Matrix>, Vec<Matrix>) =
+            (vec![Vec::new(); n_layer], vec![Vec::new(); n_layer]);
         let mut losses: Vec<ValueRef> = Vec::new();
         for pos_id in 0..n {
             let (token_id, target_id) = (tokens[pos_id], tokens[pos_id + 1]);
@@ -404,7 +384,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let loss_t: ValueRef = probs[target_id].log().neg();
             losses.push(loss_t);
         }
-        let loss: ValueRef = Value::new(1.0 / n as f64).mul(&sum(&losses)); // final average loss over the document sequence. May yours be low.
+        let loss: ValueRef = Value::new(1.0 / n as f64).mul(&sum(losses)); // final average loss over the document sequence. May yours be low.
 
         // Backward the loss, calculating the gradients with respect to all model parameters
         loss.backward();
@@ -414,8 +394,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         for (i, p) in params.iter().enumerate() {
             m[i] = beta1 * m[i] + (1.0 - beta1) * p.borrow().grad;
             v[i] = beta2 * v[i] + (1.0 - beta2) * p.borrow().grad.powi(2);
-            let m_hat = m[i] / (1.0 - beta1.powi(step as i32 + 1 as i32));
-            let v_hat = v[i] / (1.0 - beta2.powi(step as i32 + 1 as i32));
+            let m_hat = m[i] / (1.0 - beta1.powi(step as i32 + 1));
+            let v_hat = v[i] / (1.0 - beta2.powi(step as i32 + 1));
             p.borrow_mut().data -= lr_t * m_hat / (v_hat.powf(0.5) + eps_adam);
             p.borrow_mut().grad = 0.0;
         }
