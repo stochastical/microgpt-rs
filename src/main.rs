@@ -312,7 +312,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // I initially went weith a HashSet, converted to vec, and then sorted
     // but BTreeSet sorts on insert, which is nice
     // the issue is we need to do a full scan later to do the bidirectional tokenisation, to find the index of the character using position. But c'est la vie (it's tiny anyways)
-    let uchars: BTreeSet<char> = BTreeSet::from_iter(docs.join("").chars()); // or docs.flatten()?
+    let uchars: BTreeSet<char> = BTreeSet::from_iter(docs.iter().flat_map(|s| s.chars()));
     let uchars: Vec<&char> = uchars.iter().collect();
     let BOS = uchars.len(); // token id for a special Beginning of Sequence (BOS) token
     let vocab_size = uchars.len() + 1; // total number of unique tokens, +1 is for BOS
@@ -433,8 +433,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
             token_id = *(0..vocab_size)
                 .collect::<Vec<usize>>()
-                .choose_weighted(&mut rng, |&i| probs[i].borrow().data)
-                .unwrap();
+                .choose_weighted(&mut rng, |&i| probs[i].borrow().data)?;
             if token_id == BOS {
                 break;
             }
