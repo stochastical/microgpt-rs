@@ -1,0 +1,3 @@
+[submodule "microgpt"]
+	path = microgpt
+	url = https://gist.github.com/8627fe009c40f57531cb18360106ce95.git
