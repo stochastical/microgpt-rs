@@ -1,10 +1,10 @@
 # `microGPT-rs`
 
-This is a Rust port of Andrej Karpathy's (@karpathy) [microGPT](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) training script.
+This is a Rust port of Andrej Karpathy's (@karpathy) [microGPT](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) training script. A longer write up as a blog post on https://abstractnonsense.xyz is pending.
 
 The objective was to transliterate it to Rust whilst remaining as faithful to the original Python as possible. Much fun was had wrangling the borrow checker to implement the autograd graph structure for back propagation, and much gnashing of teeth was had figuring out tensor dimensions from the Python source.
 
-Please excuse the messy comments, I'm still in the midst of cleaning it up. But it works!
+I've preserved the original comments as I enjoyed them when originally reading through the source code.
 
 To execute the training script, please run the code in `release` mode:
 
@@ -43,5 +43,3 @@ sample 18: micain
 sample 19: analen
 sample 20: avilen
 ```
-
-A longer write up as a blog post on https://abstractnonsense.xyz is pending.
